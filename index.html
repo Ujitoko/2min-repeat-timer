@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>2min Timer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100dvh;
+    background: #1a1a2e;
+    color: #eee;
+    user-select: none;
+    -webkit-user-select: none;
+    overflow: hidden;
+  }
+  .timer {
+    font-size: clamp(80px, 25vw, 160px);
+    font-variant-numeric: tabular-nums;
+    font-weight: 200;
+    letter-spacing: 4px;
+    transition: color 0.3s;
+  }
+  .timer.warning { color: #e74c3c; }
+  .round {
+    font-size: 18px;
+    color: #888;
+    margin-bottom: 20px;
+  }
+  .btn {
+    margin-top: 40px;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    border: 3px solid #4fc3f7;
+    background: transparent;
+    color: #4fc3f7;
+    font-size: 18px;
+    cursor: pointer;
+    transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn:active { transform: scale(0.93); }
+  .btn.running { border-color: #e74c3c; color: #e74c3c; }
+</style>
+</head>
+<body>
+  <div class="round" id="round">ROUND 1</div>
+  <div class="timer" id="timer">2:00</div>
+  <button class="btn" id="btn" onclick="toggle()">START</button>
+  <audio id="beep" preload="auto"></audio>
+<script>
+  const DURATION = 120;
+  const timerEl = document.getElementById('timer');
+  const btnEl = document.getElementById('btn');
+  const roundEl = document.getElementById('round');
+  const beepEl = document.getElementById('beep');
+
+  // Generate beep sound
+  const actx = new (window.AudioContext || window.webkitAudioContext)();
+  function playBeep() {
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    o.connect(g);
+    g.connect(actx.destination);
+    o.frequency.value = 880;
+    g.gain.value = 0.3;
+    o.start();
+    g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.5);
+    o.stop(actx.currentTime + 0.5);
+  }
+
+  let remaining = DURATION;
+  let running = false;
+  let intervalId = null;
+  let round = 1;
+
+  function display(sec) {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    timerEl.textContent = m + ':' + String(s).padStart(2, '0');
+    timerEl.classList.toggle('warning', sec <= 10 && sec > 0);
+  }
+
+  function tick() {
+    remaining--;
+    if (remaining < 0) {
+      playBeep();
+      round++;
+      roundEl.textContent = 'ROUND ' + round;
+      remaining = DURATION;
+    }
+    display(remaining);
+  }
+
+  function toggle() {
+    if (actx.state === 'suspended') actx.resume();
+    if (running) {
+      clearInterval(intervalId);
+      btnEl.textContent = 'START';
+      btnEl.classList.remove('running');
+    } else {
+      intervalId = setInterval(tick, 1000);
+      btnEl.textContent = 'STOP';
+      btnEl.classList.add('running');
+    }
+    running = !running;
+  }
+
+  display(DURATION);
+</script>
+</body>
+</html>
