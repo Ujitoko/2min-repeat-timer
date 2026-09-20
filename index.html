@@ -4,10 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>2min Timer</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>⏱</text></svg>">
+<meta name="theme-color" content="#1a1a2e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231a1a2e'/><text x='50' y='68' font-size='60' text-anchor='middle'>⏱</text></svg>">
+<meta name="apple-mobile-web-app-title" content="2min Timer">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
@@ -57,33 +61,84 @@
 <body>
   <div class="round" id="round">ROUND 1</div>
   <div class="timer" id="timer">2:00</div>
-  <button class="btn" id="btn" onclick="toggle()">START</button>
-  <audio id="beep" preload="auto"></audio>
+  <button class="btn" id="btn" type="button">START</button>
 <script>
   const DURATION = 120;
   const timerEl = document.getElementById('timer');
   const btnEl = document.getElementById('btn');
   const roundEl = document.getElementById('round');
-  const beepEl = document.getElementById('beep');
 
-  // Generate beep sound
-  const actx = new (window.AudioContext || window.webkitAudioContext)();
+  // ---- Audio ----
+  // AudioContext はページ読み込み時ではなく最初のタップ時に作る。
+  // 生成に失敗しても(API 無効・非対応など)タイマー本体は動き続ける。
+  let actx = null;
+  function getAudioContext() {
+    if (actx) return actx;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) actx = new AC();
+    } catch (e) {
+      actx = null;
+    }
+    return actx;
+  }
+  function unlockAudio() {
+    // ユーザー操作中に resume しておく(iOS の自動再生制限対策)
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    try {
+      if (ctx.state !== 'running') {
+        const p = ctx.resume();
+        if (p && p.catch) p.catch(function () {});
+      }
+    } catch (e) {}
+  }
   function playBeep() {
-    const o = actx.createOscillator();
-    const g = actx.createGain();
-    o.connect(g);
-    g.connect(actx.destination);
-    o.frequency.value = 880;
-    g.gain.value = 0.3;
-    o.start();
-    g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.5);
-    o.stop(actx.currentTime + 0.5);
+    const ctx = getAudioContext();
+    if (ctx) {
+      try {
+        if (ctx.state !== 'running') ctx.resume();
+        const t = ctx.currentTime;
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.connect(g);
+        g.connect(ctx.destination);
+        o.frequency.value = 880;
+        g.gain.setValueAtTime(0.3, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+        o.start(t);
+        o.stop(t + 0.5);
+      } catch (e) {}
+    }
+    try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch (e) {}
   }
 
-  let remaining = DURATION;
+  // ---- Screen wake lock (対応ブラウザのみ。失敗しても無視) ----
+  let wakeLock = null;
+  function keepAwake(on) {
+    try {
+      if (on) {
+        if (!wakeLock && navigator.wakeLock) {
+          navigator.wakeLock.request('screen').then(function (lock) {
+            wakeLock = lock;
+            lock.addEventListener('release', function () { wakeLock = null; });
+          }).catch(function () { wakeLock = null; });
+        }
+      } else if (wakeLock) {
+        wakeLock.release().catch(function () {});
+        wakeLock = null;
+      }
+    } catch (e) { wakeLock = null; }
+  }
+
+  // ---- Timer ----
+  // カウントは setInterval の回数ではなく時刻ベースで行う。
+  // バックグラウンドでタイマーが間引かれても、戻ってきた時に正しい残り時間になる。
   let running = false;
   let intervalId = null;
   let round = 1;
+  let endAt = 0;                      // 現在ラウンドの終了時刻 (ms)
+  let pausedMs = DURATION * 1000;     // 停止中の残り時間 (ms)
 
   function display(sec) {
     const m = Math.floor(sec / 60);
@@ -93,31 +148,55 @@
   }
 
   function tick() {
-    remaining--;
-    if (remaining < 0) {
-      playBeep();
-      round++;
+    const now = Date.now();
+    if (now >= endAt) {
+      // 複数ラウンド分経過していても一気に追従する(ビープは 1 回)
+      const passed = Math.floor((now - endAt) / (DURATION * 1000)) + 1;
+      round += passed;
+      endAt += passed * DURATION * 1000;
       roundEl.textContent = 'ROUND ' + round;
-      remaining = DURATION;
+      playBeep();
     }
-    display(remaining);
+    display(Math.ceil((endAt - now) / 1000));
   }
 
   function toggle() {
-    if (actx.state === 'suspended') actx.resume();
     if (running) {
       clearInterval(intervalId);
+      intervalId = null;
+      pausedMs = Math.max(0, endAt - Date.now());
       btnEl.textContent = 'START';
       btnEl.classList.remove('running');
+      keepAwake(false);
     } else {
-      intervalId = setInterval(tick, 1000);
+      unlockAudio();
+      endAt = Date.now() + pausedMs;
+      intervalId = setInterval(tick, 250);
       btnEl.textContent = 'STOP';
       btnEl.classList.add('running');
+      keepAwake(true);
+      tick();
     }
     running = !running;
   }
 
+  btnEl.addEventListener('click', toggle);
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && running) {
+      tick();          // 表示を即座に追従
+      keepAwake(true); // 非表示時に解放された wake lock を再取得
+    }
+  });
+
   display(DURATION);
+
+  // オフライン起動用の Service Worker(対応環境のみ。失敗しても無視)
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js').catch(function () {});
+    });
+  }
 </script>
 </body>
 </html>
